@@ -336,6 +336,15 @@ async function runClusterAcceptance(deadline) {
   );
 }
 
+function isPodReady(pod) {
+  return (
+    pod.status.phase === "Running" &&
+    pod.status.conditions?.some(
+      (condition) => condition.type === "Ready" && condition.status === "True",
+    ) === true
+  );
+}
+
 async function getResource(resource, nameOrSelector, deadline) {
   const output = await runKubectl(
     ["get", resource, nameOrSelector, "-o", "json"],
@@ -395,12 +404,7 @@ function assertReadyPods(pods) {
     );
   }
 
-  const notReady = pods.items.filter((pod) => {
-    const isReady = pod.status.conditions?.some(
-      (condition) => condition.type === "Ready" && condition.status === "True",
-    );
-    return pod.status.phase !== "Running" || !isReady;
-  });
+  const notReady = pods.items.filter((pod) => !isPodReady(pod));
   if (notReady.length > 0) {
     throw new Error(
       `Not all API Pods are Running and Ready: ${notReady.map((pod) => pod.metadata.name).join(", ")}`,
@@ -617,4 +621,12 @@ if (
   });
 }
 
-export { requireOwnedCluster, runClusterAcceptance, runKubectl };
+export {
+  appName,
+  getResource,
+  isPodReady,
+  replicaCount,
+  requireOwnedCluster,
+  runClusterAcceptance,
+  runKubectl,
+};

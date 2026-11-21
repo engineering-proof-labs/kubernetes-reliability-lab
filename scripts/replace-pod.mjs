@@ -1,10 +1,15 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { requireOwnedCluster, runKubectl } from "./lab.mjs";
+import {
+  appName,
+  getResource,
+  isPodReady,
+  replicaCount,
+  requireOwnedCluster,
+  runKubectl,
+} from "./lab.mjs";
 
-const appName = "reliability-api";
-const replicaCount = 3;
 const selector = `-l=app.kubernetes.io/name=${appName}`;
 
 async function main() {
@@ -113,14 +118,6 @@ async function getPods() {
   return getResource("pods", selector);
 }
 
-async function getResource(resource, nameOrSelector, deadline) {
-  const output = await runKubectl(
-    ["get", resource, nameOrSelector, "-o", "json"],
-    { capture: true, deadline },
-  );
-  return JSON.parse(output);
-}
-
 function assertReadyPods(pods) {
   if (pods.items.length !== replicaCount) {
     throw new Error(
@@ -128,12 +125,7 @@ function assertReadyPods(pods) {
     );
   }
 
-  const notReady = pods.items.filter((pod) => {
-    const ready = pod.status.conditions?.some(
-      (condition) => condition.type === "Ready" && condition.status === "True",
-    );
-    return pod.status.phase !== "Running" || !ready;
-  });
+  const notReady = pods.items.filter((pod) => !isPodReady(pod));
   if (notReady.length > 0) {
     throw new Error(
       `All API Pods must be Running and Ready before replacement: ${notReady.map((pod) => pod.metadata.name).join(", ")}`,

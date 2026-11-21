@@ -5,12 +5,15 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sampleServiceTraffic } from "./traffic.mjs";
 import {
+  appName,
+  getResource,
+  isPodReady,
+  replicaCount,
   requireOwnedCluster,
   runClusterAcceptance,
   runKubectl,
 } from "./lab.mjs";
 
-const appName = "reliability-api";
 const appSelector = `app.kubernetes.io/name=${appName}`;
 const operationDurationMs = 10_000;
 const shutdownTimeoutMs = 20_000;
@@ -419,7 +422,7 @@ async function waitForReplacement(originalUid) {
     try {
       const pods = await getPods(deadline);
       if (
-        pods.items.length === 3 &&
+        pods.items.length === replicaCount &&
         !pods.items.some((pod) => pod.metadata.uid === originalUid)
       ) {
         await runClusterAcceptance(deadline);
@@ -453,14 +456,6 @@ async function getEndpointSlices(deadline) {
     deadline,
   );
   return slices.items.flatMap((slice) => slice.endpoints ?? []);
-}
-
-async function getResource(resource, nameOrSelector, deadline) {
-  const output = await runKubectl(
-    ["get", resource, nameOrSelector, "-o", "json"],
-    { capture: true, deadline },
-  );
-  return JSON.parse(output);
 }
 
 async function reportFailureDiagnostics(logStream, podName) {
@@ -504,15 +499,6 @@ async function reportFailureDiagnostics(logStream, podName) {
   if (relevantLogs.length > 0) {
     console.error(relevantLogs.join("\n"));
   }
-}
-
-function isPodReady(pod) {
-  return (
-    pod.status.phase === "Running" &&
-    pod.status.conditions?.some(
-      (condition) => condition.type === "Ready" && condition.status === "True",
-    )
-  );
 }
 
 function round(value) {

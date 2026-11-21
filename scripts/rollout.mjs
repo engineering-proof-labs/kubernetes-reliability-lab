@@ -3,13 +3,15 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { runTrafficExperiment } from "./traffic.mjs";
 import {
+  appName,
+  getResource,
+  isPodReady,
+  replicaCount,
   requireOwnedCluster,
   runClusterAcceptance,
   runKubectl,
 } from "./lab.mjs";
 
-const appName = "reliability-api";
-const replicaCount = 3;
 const selector = `-l=app.kubernetes.io/name=${appName}`;
 const rolloutTimeout = "120s";
 
@@ -352,14 +354,6 @@ async function getEndpointState(deadline) {
   };
 }
 
-async function getResource(resource, nameOrSelector, deadline) {
-  const output = await runKubectl(
-    ["get", resource, nameOrSelector, "-o", "json"],
-    { capture: true, deadline },
-  );
-  return JSON.parse(output);
-}
-
 async function setDeploymentEnv(name, value) {
   await runKubectl(["set", "env", `deployment/${appName}`, `${name}=${value}`]);
 }
@@ -523,13 +517,6 @@ function assertSuccessfulTraffic(traffic) {
       "The old ready Pods did not serve all traffic during the blocked rollout",
     );
   }
-}
-
-function isPodReady(pod) {
-  const ready = pod.status.conditions?.some(
-    (condition) => condition.type === "Ready" && condition.status === "True",
-  );
-  return pod.status.phase === "Running" && ready;
 }
 
 function getRevision(resource) {

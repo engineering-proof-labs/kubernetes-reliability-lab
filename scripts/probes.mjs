@@ -1,10 +1,15 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { requireOwnedCluster, runKubectl } from "./lab.mjs";
+import {
+  appName,
+  getResource,
+  isPodReady,
+  replicaCount,
+  requireOwnedCluster,
+  runKubectl,
+} from "./lab.mjs";
 
-const appName = "reliability-api";
-const replicaCount = 3;
 const selector = `-l=app.kubernetes.io/name=${appName}`;
 const pollIntervalMs = 250;
 const readinessTimeoutMs = 30_000;
@@ -303,14 +308,6 @@ async function getEndpointState(deadline) {
   };
 }
 
-async function getResource(resource, nameOrSelector, deadline) {
-  const output = await runKubectl(
-    ["get", resource, nameOrSelector, "-o", "json"],
-    { capture: true, deadline },
-  );
-  return JSON.parse(output);
-}
-
 async function writeFailureMarker(podName, markerPath) {
   const source = `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(markerPath)}, "active");`;
   await runNodeInPod(podName, source);
@@ -397,13 +394,6 @@ function assertReadyPods(pods) {
   ) {
     throw new Error(`Expected ${replicaCount} Running and Ready API Pods`);
   }
-}
-
-function isPodReady(pod) {
-  const ready = pod.status.conditions?.some(
-    (condition) => condition.type === "Ready" && condition.status === "True",
-  );
-  return pod.status.phase === "Running" && ready;
 }
 
 function getApiContainerStatus(pod) {
