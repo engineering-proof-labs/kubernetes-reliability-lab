@@ -1,9 +1,21 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { rm, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApplication } from "../src/application.js";
+
+const readinessFailureFile = join(
+  tmpdir(),
+  "kubernetes-reliability-lab-readiness-failure",
+);
+const livenessFailureFile = join(
+  tmpdir(),
+  "kubernetes-reliability-lab-liveness-failure",
+);
 
 describe("HTTP application", () => {
   const logs: string[] = [];
@@ -11,8 +23,17 @@ describe("HTTP application", () => {
   let baseUrl: string;
 
   beforeAll(async () => {
+    await Promise.all([
+      rm(readinessFailureFile, { force: true }),
+      rm(livenessFailureFile, { force: true }),
+    ]);
     server = createApplication(
-      { port: 0, version: "1.2.3", instanceId: "pod-a" },
+      {
+        port: 0,
+        version: "1.2.3",
+        instanceId: "pod-a",
+        startupDelayMs: 0,
+      },
       (line) => logs.push(line),
     );
     server.listen(0, "127.0.0.1");
@@ -24,9 +45,13 @@ describe("HTTP application", () => {
   });
 
   afterAll(async () => {
-    await new Promise<void>((resolve, reject) => {
-      server.close((error) => (error ? reject(error) : resolve()));
-    });
+    await Promise.all([
+      rm(readinessFailureFile, { force: true }),
+      rm(livenessFailureFile, { force: true }),
+      new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      }),
+    ]);
   });
 
   it("returns the configured version and instance with a server request ID", async () => {
@@ -60,6 +85,83 @@ describe("HTTP application", () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ status: "ok" });
+  });
+
+  it("reports startup and readiness independently from liveness", async () => {
+    const [startup, readiness, liveness] = await Promise.all([
+      fetch(`${baseUrl}/health/startup`),
+      fetch(`${baseUrl}/health/ready`),
+      fetch(`${baseUrl}/health/live`),
+    ]);
+
+    expect(startup.status).toBe(200);
+    await expect(startup.json()).resolves.toEqual({ status: "ok" });
+    expect(readiness.status).toBe(200);
+    await expect(readiness.json()).resolves.toEqual({ status: "ok" });
+    expect(liveness.status).toBe(200);
+    await expect(liveness.json()).resolves.toEqual({ status: "ok" });
+  });
+
+  it("marks readiness failed without failing liveness", async () => {
+    await writeFile(readinessFailureFile, "active");
+
+    try {
+      const readiness = await fetch(`${baseUrl}/health/ready`);
+      const liveness = await fetch(`${baseUrl}/health/live`);
+
+      expect(readiness.status).toBe(503);
+      await expect(readiness.json()).resolves.toEqual({ status: "not_ready" });
+      expect(liveness.status).toBe(200);
+      await expect(liveness.json()).resolves.toEqual({ status: "ok" });
+    } finally {
+      await rm(readinessFailureFile, { force: true });
+    }
+  });
+
+  it("marks liveness failed without failing readiness", async () => {
+    await writeFile(livenessFailureFile, "active");
+
+    try {
+      const liveness = await fetch(`${baseUrl}/health/live`);
+      const readiness = await fetch(`${baseUrl}/health/ready`);
+
+      expect(liveness.status).toBe(503);
+      await expect(liveness.json()).resolves.toEqual({ status: "unhealthy" });
+      expect(readiness.status).toBe(200);
+      await expect(readiness.json()).resolves.toEqual({ status: "ok" });
+    } finally {
+      await rm(livenessFailureFile, { force: true });
+    }
+  });
+
+  it("keeps the startup route unavailable during configured initialization", async () => {
+    const delayedServer = createApplication({
+      port: 0,
+      version: "1.2.3",
+      instanceId: "slow-pod",
+      startupDelayMs: 1_000,
+    });
+    delayedServer.listen(0, "127.0.0.1");
+    await once(delayedServer, "listening");
+
+    const address = delayedServer.address();
+    assert(address && typeof address !== "string");
+    const delayedUrl = `http://127.0.0.1:${(address as AddressInfo).port}`;
+
+    try {
+      const starting = await fetch(`${delayedUrl}/health/startup`);
+      expect(starting.status).toBe(503);
+      await expect(starting.json()).resolves.toEqual({ status: "starting" });
+
+      await new Promise((resolve) => setTimeout(resolve, 1_050));
+      const started = await fetch(`${delayedUrl}/health/startup`);
+      expect(started.status).toBe(200);
+      await expect(started.json()).resolves.toEqual({ status: "ok" });
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        delayedServer.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
   });
 
   it("returns a JSON 404 for unknown routes", async () => {

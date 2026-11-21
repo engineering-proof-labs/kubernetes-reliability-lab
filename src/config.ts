@@ -4,6 +4,7 @@ export interface AppConfig {
   port: number;
   version: string;
   instanceId: string;
+  startupDelayMs: number;
 }
 
 export function readAppConfig(
@@ -22,6 +23,15 @@ export function readAppConfig(
 
   const version = env.APP_VERSION?.trim() || "dev";
   const instanceId = env.POD_NAME?.trim() || fallbackInstanceId;
+  const rawStartupDelay = env.STARTUP_DELAY_MS ?? "0";
+  if (!/^\d+$/.test(rawStartupDelay)) {
+    throw new Error("STARTUP_DELAY_MS must be an integer between 0 and 60000");
+  }
 
-  return { port, version, instanceId };
+  const startupDelayMs = Number(rawStartupDelay);
+  if (startupDelayMs > 60_000) {
+    throw new Error("STARTUP_DELAY_MS must be an integer between 0 and 60000");
+  }
+
+  return { port, version, instanceId, startupDelayMs };
 }

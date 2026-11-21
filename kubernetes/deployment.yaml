@@ -30,6 +30,8 @@ spec:
               value: "8080"
             - name: APP_VERSION
               value: __VERSION__
+            - name: STARTUP_DELAY_MS
+              value: "8000"
             - name: POD_NAME
               valueFrom:
                 fieldRef:
@@ -41,6 +43,28 @@ spec:
             limits:
               cpu: 500m
               memory: 128Mi
+          startupProbe:
+            httpGet:
+              path: /health/startup
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 1
+            failureThreshold: 10
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 1
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 1
+            failureThreshold: 1
+            successThreshold: 1
           securityContext:
             runAsNonRoot: true
             runAsUser: 1000

@@ -1,7 +1,19 @@
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { createServer, type Server } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import type { AppConfig } from "./config.js";
+
+const readinessFailureFile = join(
+  tmpdir(),
+  "kubernetes-reliability-lab-readiness-failure",
+);
+const livenessFailureFile = join(
+  tmpdir(),
+  "kubernetes-reliability-lab-liveness-failure",
+);
 
 type AccessLog = {
   timestamp: string;
@@ -18,6 +30,8 @@ export function createApplication(
   config: AppConfig,
   writeLog: (line: string) => void = console.log,
 ): Server {
+  const applicationStartedAt = performance.now();
+
   return createServer((request, response) => {
     const requestId = randomUUID();
     const startedAt = performance.now();
@@ -47,8 +61,28 @@ export function createApplication(
       return;
     }
 
+    if (request.method === "GET" && path === "/health/startup") {
+      const startupComplete =
+        performance.now() - applicationStartedAt >= config.startupDelayMs;
+      sendJson(response, startupComplete ? 200 : 503, {
+        status: startupComplete ? "ok" : "starting",
+      });
+      return;
+    }
+
+    if (request.method === "GET" && path === "/health/ready") {
+      const ready = !existsSync(readinessFailureFile);
+      sendJson(response, ready ? 200 : 503, {
+        status: ready ? "ok" : "not_ready",
+      });
+      return;
+    }
+
     if (request.method === "GET" && path === "/health/live") {
-      sendJson(response, 200, { status: "ok" });
+      const live = !existsSync(livenessFailureFile);
+      sendJson(response, live ? 200 : 503, {
+        status: live ? "ok" : "unhealthy",
+      });
       return;
     }
 

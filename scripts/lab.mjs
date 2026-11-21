@@ -252,16 +252,18 @@ async function verifyHttpContract(expectedVersion, hostPort) {
     throw new Error(`Unexpected GET / response: ${JSON.stringify(root)}`);
   }
 
-  const health = await requestJson("/health/live", hostPort);
-  if (health.status !== 200 || health.body.status !== "ok") {
-    throw new Error(`Unexpected liveness response: ${JSON.stringify(health)}`);
+  for (const path of ["/health/startup", "/health/ready", "/health/live"]) {
+    const health = await requestJson(path, hostPort);
+    if (health.status !== 200 || health.body.status !== "ok") {
+      throw new Error(`Unexpected ${path} response: ${JSON.stringify(health)}`);
+    }
   }
 
   console.log(
     JSON.stringify({
       version: root.body.version,
       instanceId: root.body.instanceId,
-      health: health.body.status,
+      health: "ok",
     }),
   );
 }
@@ -349,15 +351,31 @@ function assertDeployment(deployment, expectedVersion) {
     deployment.status.availableReplicas !== replicaCount ||
     container?.env?.find((item) => item.name === "APP_VERSION")?.value !==
       expectedVersion ||
+    container?.env?.find((item) => item.name === "STARTUP_DELAY_MS")?.value !==
+      "8000" ||
+    !matchesHttpProbe(container?.startupProbe, "/health/startup", 10) ||
+    !matchesHttpProbe(container?.livenessProbe, "/health/live", 3) ||
+    !matchesHttpProbe(container?.readinessProbe, "/health/ready", 1) ||
+    container?.readinessProbe?.successThreshold !== 1 ||
     container?.resources?.requests?.cpu !== "100m" ||
     container?.resources?.requests?.memory !== "64Mi" ||
     container?.resources?.limits?.cpu !== "500m" ||
     container?.resources?.limits?.memory !== "128Mi"
   ) {
     throw new Error(
-      "Deployment does not match the replica, version, or resource contract",
+      "Deployment does not match the replica, version, probe, or resource contract",
     );
   }
+}
+
+function matchesHttpProbe(probe, path, failureThreshold) {
+  return (
+    probe?.httpGet?.path === path &&
+    probe.httpGet.port === "http" &&
+    probe.periodSeconds === 2 &&
+    probe.timeoutSeconds === 1 &&
+    probe.failureThreshold === failureThreshold
+  );
 }
 
 function assertReadyPods(pods) {
