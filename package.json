@@ -24,6 +24,7 @@
     "experiment:replace-pod": "node scripts/replace-pod.mjs",
     "experiment:probes": "node scripts/probes.mjs",
     "experiment:rollout": "node scripts/rollout.mjs",
+    "experiment:termination": "node scripts/termination.mjs",
     "test:cluster": "node scripts/test-cluster.mjs",
     "verify": "npm run typecheck && npm run lint && npm run format:check && npm test && npm run build"
   },

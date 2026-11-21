@@ -27,5 +27,6 @@ jobs:
       - run: npm run experiment:probes
       - run: npm run experiment:replace-pod
       - run: npm run experiment:rollout
+      - run: npm run experiment:termination
       - if: always()
         run: npm run lab:down
