@@ -16,8 +16,17 @@ const livenessMarker = "/tmp/kubernetes-reliability-lab-liveness-failure";
 
 async function main() {
   const state = await requireOwnedCluster();
-  const pods = await getPods();
+  const [pods, endpoints] = await Promise.all([getPods(), getEndpointState()]);
   assertReadyPods(pods);
+  const podNames = new Set(pods.items.map((pod) => pod.metadata.name));
+  if (
+    endpoints.readyPodNames.size !== replicaCount ||
+    [...podNames].some((name) => !endpoints.readyPodNames.has(name))
+  ) {
+    throw new Error(
+      "The probe experiment requires three ready Service endpoints",
+    );
+  }
 
   const target = pods.items[0];
   const targetName = target.metadata.name;
