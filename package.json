@@ -20,6 +20,8 @@
     "lab:check": "node scripts/lab.mjs check",
     "lab:logs": "node scripts/lab.mjs logs",
     "lab:down": "node scripts/lab.mjs down",
+    "experiment:traffic": "node scripts/traffic.mjs",
+    "experiment:replace-pod": "node scripts/replace-pod.mjs",
     "test:cluster": "node scripts/test-cluster.mjs",
     "verify": "npm run typecheck && npm run lint && npm run format:check && npm test && npm run build"
   },
