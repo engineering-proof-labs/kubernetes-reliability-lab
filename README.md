@@ -1,8 +1,8 @@
 # Kubernetes Reliability Lab
 
-A small TypeScript service used to study how Kubernetes runs an application and exposes it through a Service. The first stage starts one local Pod and checks the HTTP contract through a kind cluster.
+A small TypeScript service for experiments with Kubernetes Deployments and Services. The current stage runs three API replicas and verifies how the Service responds when a Pod is replaced.
 
-The lab currently has one replica and one Kubernetes node. It does not yet demonstrate probe-driven recovery, replica replacement, rolling updates, or behavior across multiple machines. The `/health/live` route is available to query, but Kubernetes probes are not configured in this stage.
+The kind cluster has one node, so all three Pods run on the same machine. The lab does not yet demonstrate probe-driven recovery, rolling updates, or behavior across multiple machines. The `/health/live` route is available to query, but Kubernetes probes are not configured yet.
 
 ## Requirements
 
@@ -38,10 +38,24 @@ Use these commands to inspect the running lab:
 npm run lab:status
 npm run lab:check
 npm run test:cluster
+npm run experiment:traffic
+npm run experiment:replace-pod
 npm run lab:logs
 ```
 
-`lab:status` prints the Deployment, Pod, and Service. `lab:check` queries the root and liveness routes. `test:cluster` checks the live HTTP responses and the actual Pod, Deployment, Service, EndpointSlice, and resource settings. `lab:logs` follows the API container logs; press Ctrl+C to stop following them.
+`lab:status` prints the Deployment, Pods, and Service. `lab:check` queries the root and liveness routes. `test:cluster` checks the HTTP contract, three ready Pods, three Service endpoints, configured resources, and a short run of new HTTP connections. `lab:logs` follows the API container logs; press Ctrl+C to stop following them.
+
+## Replica experiments
+
+`experiment:traffic` sends 60 requests with four concurrent workers by default. Each request opens a new TCP connection, then records the HTTP status, response request ID, instance ID, transport errors, and client-side latency. Choose a different request count and concurrency when needed:
+
+```sh
+npm run experiment:traffic -- 90 3
+```
+
+The output groups successful responses by `instanceId` and reports latency percentiles for that run. It does not expect equal counts from each Pod; the result depends on the local run and connection routing.
+
+`experiment:replace-pod` records the three ready Pod names and UIDs, deletes one Pod through the lab's kubeconfig and namespace, then waits for the Deployment to restore three ready Pods. It verifies that Kubernetes created a new UID and that the Service has three ready endpoints afterward.
 
 To remove the cluster:
 
@@ -69,9 +83,9 @@ The chosen port is stored with the local cluster state and used by `lab:check` a
 
 ## What to observe
 
-kind runs the Kubernetes node as a Docker container. The application container runs inside a Pod managed by a Deployment. A Service selects the Pod and exposes port `30080` on the kind node; kind maps that NodePort to the host's loopback address.
+kind runs the Kubernetes node as a Docker container. Each application container runs inside a Pod managed by a Deployment. A Service selects the three Pods and exposes port `30080` on the kind node; kind maps that NodePort to the host's loopback address.
 
-The Deployment starts one replica. The Pod receives its own name through the Downward API as `POD_NAME`; when running locally, the process uses the machine hostname. `APP_VERSION` comes from the lab image tag, or defaults to `dev` when running with `npm run dev`.
+The Deployment keeps three replicas. Each Pod receives its own name through the Downward API as `POD_NAME`; when running locally, the process uses the machine hostname. `APP_VERSION` comes from the lab image tag, or defaults to `dev` when running with `npm run dev`.
 
 The API contract is:
 
@@ -87,7 +101,7 @@ The Deployment's CPU and memory requests and limits are starting values for this
 
 ## Verification
 
-`npm run verify` runs TypeScript type checking, ESLint, Prettier, the HTTP tests, and a TypeScript build. `npm run test:cluster` requires a running lab and checks the live kind cluster. CI runs both sets of checks on Ubuntu and removes its temporary cluster afterward.
+`npm run verify` runs TypeScript type checking, ESLint, Prettier, the HTTP tests, and a TypeScript build. `npm run test:cluster` and `npm run experiment:replace-pod` require a running lab. The CI workflow runs these checks on Ubuntu and removes its temporary cluster afterward.
 
 The cluster has one node and runs locally in Docker. Results here do not establish multi-node availability, production capacity, or behavior during a datacenter failure.
 
