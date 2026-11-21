@@ -1,6 +1,6 @@
 # Kubernetes Reliability Lab
 
-A small TypeScript service for experiments with Kubernetes Deployments, Services, and health probes. The lab runs three API replicas and checks how the Service responds to Pod replacement, readiness failures, and a stalled Deployment update.
+A small TypeScript service for experiments with Kubernetes Deployments, Services, health probes, and graceful termination. The lab runs three API replicas and checks how the Service responds to Pod replacement, readiness failures, stalled updates, and shutdown with work in flight.
 
 The kind cluster has one node, so all three Pods run on the same machine. The lab demonstrates startup, readiness, and liveness probes, a healthy rolling update, and an explicit rollback after a stalled update. It does not demonstrate behavior across multiple machines.
 
@@ -42,6 +42,7 @@ npm run experiment:traffic
 npm run experiment:replace-pod
 npm run experiment:probes
 npm run experiment:rollout
+npm run experiment:termination
 npm run lab:logs
 ```
 
@@ -72,6 +73,14 @@ The script then writes a separate liveness marker. Kubernetes restarts that cont
 `experiment:rollout` first changes `APP_VERSION` to a new identifiable release label and waits for all three Pods to serve it. It then sets `READINESS_MODE=blocked`, which keeps new Pods unready while the old release continues serving.
 
 The Deployment uses `maxUnavailable: 0`, `maxSurge: 1`, and a 60-second progress deadline. The script waits up to 120 seconds for the `ProgressDeadlineExceeded` condition, records the Deployment and blocked Pod descriptions, ReplicaSet identity, and ready EndpointSlice targets, then sends 30 requests through the Service while the three old endpoints remain ready. It issues `kubectl rollout undo` to the saved baseline revision and verifies the original image and configuration are serving again. Kubernetes reports the stalled rollout; the script performs the rollback explicitly.
+
+## Termination experiment
+
+`GET /work?durationMs=10000` simulates one bounded operation. The API accepts durations from 1 to 10,000 milliseconds and logs an operation ID so the experiment can identify which Pod received it.
+
+`experiment:termination` starts that request through the Service, waits for its start log, and deletes the serving Pod with a 30-second grace period. The process handles `SIGTERM` by calling `server.close()`, which stops new connections while the active response drains. If draining reaches 20 seconds, the process closes remaining HTTP connections and exits with a failure status. While the Pod terminates, the script records the EndpointSlice state and sends 60 new requests through the Service. It reports HTTP and transport outcomes, verifies the in-flight request and shutdown logs, and checks that the Deployment replaced the deleted Pod with a new UID.
+
+The simulated operation has no external side effects. This experiment measures one local run; it does not promise that every new request succeeds during termination.
 
 To remove the cluster:
 
@@ -105,13 +114,14 @@ The Deployment keeps three replicas. Each Pod receives its own name through the 
 
 The API contract is:
 
-| Request               | Result                                                                                |
-| --------------------- | ------------------------------------------------------------------------------------- |
-| `GET /`               | JSON containing `version` and `instanceId`                                            |
-| `GET /health/startup` | `503` during simulated initialization, then `200`                                     |
-| `GET /health/ready`   | `200` when ready; `503` while the readiness marker exists or `READINESS_MODE=blocked` |
-| `GET /health/live`    | `200` while live; `503` while the liveness marker exists                              |
-| Any other route       | `404` with `{"error":"not_found"}`                                                    |
+| Request                      | Result                                                                                |
+| ---------------------------- | ------------------------------------------------------------------------------------- |
+| `GET /`                      | JSON containing `version` and `instanceId`                                            |
+| `GET /health/startup`        | `503` during simulated initialization, then `200`                                     |
+| `GET /health/ready`          | `200` when ready; `503` while the readiness marker exists or `READINESS_MODE=blocked` |
+| `GET /health/live`           | `200` while live; `503` while the liveness marker exists                              |
+| `GET /work?durationMs=10000` | Completes after the requested delay, limited to 10 seconds                            |
+| Any other route              | `404` with `{"error":"not_found"}`                                                    |
 
 Each completed request writes one JSON log line with a timestamp, a server-generated request ID, method, path, status, duration, instance, and version. Query strings are omitted from the logged path.
 
@@ -132,3 +142,6 @@ The cluster has one node and runs locally in Docker. Results here do not establi
 - [Kubernetes startup, liveness, and readiness probes](https://kubernetes.io/docs/concepts/configuration/liveness-readiness-startup-probes/)
 - [Kubernetes EndpointSlices](https://kubernetes.io/docs/concepts/services-networking/endpoint-slices/)
 - [kubectl rollout undo](https://kubernetes.io/docs/reference/kubectl/generated/kubectl_rollout/kubectl_rollout_undo/)
+- [Kubernetes Pod termination](https://kubernetes.io/docs/concepts/workloads/pods/pod-termination/)
+- [kubectl logs](https://kubernetes.io/docs/reference/kubectl/generated/kubectl_logs/)
+- [Node.js v24 HTTP server API](https://nodejs.org/download/release/v24.22.1/docs/api/http.html)
