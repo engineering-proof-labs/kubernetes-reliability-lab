@@ -1,8 +1,8 @@
 # Kubernetes Reliability Lab
 
-A small TypeScript service for experiments with Kubernetes Deployments and Services. The current stage runs three API replicas and verifies how the Service responds when a Pod is replaced.
+A small TypeScript service for experiments with Kubernetes Deployments, Services, and health probes. The current stage runs three API replicas and checks how the Service responds when a Pod is replaced or becomes unready.
 
-The kind cluster has one node, so all three Pods run on the same machine. The lab does not yet demonstrate probe-driven recovery, rolling updates, or behavior across multiple machines. The `/health/live` route is available to query, but Kubernetes probes are not configured yet.
+The kind cluster has one node, so all three Pods run on the same machine. The lab demonstrates startup, readiness, and liveness probes on that local cluster. It does not yet demonstrate rolling updates or behavior across multiple machines.
 
 ## Requirements
 
@@ -40,10 +40,11 @@ npm run lab:check
 npm run test:cluster
 npm run experiment:traffic
 npm run experiment:replace-pod
+npm run experiment:probes
 npm run lab:logs
 ```
 
-`lab:status` prints the Deployment, Pods, and Service. `lab:check` queries the root and liveness routes. `test:cluster` checks the HTTP contract, three ready Pods, three Service endpoints, configured resources, and a short run of new HTTP connections. `lab:logs` follows the API container logs; press Ctrl+C to stop following them.
+`lab:status` prints the Deployment, Pods, and Service. `lab:check` queries the API and its health routes. `test:cluster` checks the HTTP contract, three ready Pods, three Service endpoints, configured resources, and a short run of new HTTP connections. `lab:logs` follows the API container logs; press Ctrl+C to stop following them.
 
 ## Replica experiments
 
@@ -56,6 +57,14 @@ npm run experiment:traffic -- 90 3
 The output groups successful responses by `instanceId` and reports latency percentiles for that run. It does not expect equal counts from each Pod; the result depends on the local run and connection routing.
 
 `experiment:replace-pod` records the three ready Pod names and UIDs, deletes one Pod through the lab's kubeconfig and namespace, then waits for the Deployment to restore three ready Pods. It verifies that Kubernetes created a new UID and that the Service has three ready endpoints afterward.
+
+## Probe experiment
+
+Each container simulates an eight-second initialization period. The startup probe gates readiness and liveness until `/health/startup` succeeds. This delay exists to make the startup behavior observable; the API does not perform real initialization work.
+
+`experiment:probes` writes a readiness marker into one container's temporary filesystem. It checks that the Pod becomes unready and leaves the set of ready Service endpoints while its container keeps running and its restart count stays unchanged. The liveness route remains healthy during this phase.
+
+The script then writes a separate liveness marker. Kubernetes restarts that container after repeated failed checks. The experiment checks the restart count, Pod UID, startup probe state, and that the marker disappears when the container starts again. Marker files are created with `kubectl exec`; the API has no administrative route for changing health state.
 
 To remove the cluster:
 
@@ -89,19 +98,21 @@ The Deployment keeps three replicas. Each Pod receives its own name through the 
 
 The API contract is:
 
-| Request            | Result                                                  |
-| ------------------ | ------------------------------------------------------- |
-| `GET /`            | JSON containing `version` and `instanceId`              |
-| `GET /health/live` | `200` with `{"status":"ok"}` while the process responds |
-| Any other route    | `404` with `{"error":"not_found"}`                      |
+| Request               | Result                                                    |
+| --------------------- | --------------------------------------------------------- |
+| `GET /`               | JSON containing `version` and `instanceId`                |
+| `GET /health/startup` | `503` during simulated initialization, then `200`         |
+| `GET /health/ready`   | `200` when ready; `503` while the readiness marker exists |
+| `GET /health/live`    | `200` while live; `503` while the liveness marker exists  |
+| Any other route       | `404` with `{"error":"not_found"}`                        |
 
 Each completed request writes one JSON log line with a timestamp, a server-generated request ID, method, path, status, duration, instance, and version. Query strings are omitted from the logged path.
 
-The Deployment's CPU and memory requests and limits are starting values for this lab, not capacity recommendations. A Pod shown as Ready in this stage has no readiness probe configured; the HTTP checks are separate from Kubernetes readiness. Probe behavior is a later experiment.
+The Deployment's CPU and memory requests and limits are starting values for this lab, not capacity recommendations. The readiness and liveness markers are independent files in the container's temporary directory. The readiness marker does not restart the container; the liveness marker causes a restart, which removes files from that container's writable layer.
 
 ## Verification
 
-`npm run verify` runs TypeScript type checking, ESLint, Prettier, the HTTP tests, and a TypeScript build. `npm run test:cluster` and `npm run experiment:replace-pod` require a running lab. The CI workflow runs these checks on Ubuntu and removes its temporary cluster afterward.
+`npm run verify` runs TypeScript type checking, ESLint, Prettier, the HTTP tests, and a TypeScript build. `npm run test:cluster` and the `experiment:*` commands require a running lab. The CI workflow runs the cluster checks and experiments on Ubuntu, then removes its temporary cluster.
 
 The cluster has one node and runs locally in Docker. Results here do not establish multi-node availability, production capacity, or behavior during a datacenter failure.
 
@@ -111,3 +122,5 @@ The cluster has one node and runs locally in Docker. Results here do not establi
 - [kind cluster configuration and port mappings](https://kind.sigs.k8s.io/docs/user/configuration/)
 - [Kubernetes Deployments](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/)
 - [Kubernetes Services](https://kubernetes.io/docs/concepts/services-networking/service/)
+- [Kubernetes startup, liveness, and readiness probes](https://kubernetes.io/docs/concepts/configuration/liveness-readiness-startup-probes/)
+- [Kubernetes EndpointSlices](https://kubernetes.io/docs/concepts/services-networking/endpoint-slices/)
