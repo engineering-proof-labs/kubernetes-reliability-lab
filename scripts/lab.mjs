@@ -58,10 +58,10 @@ async function labUp() {
     },
   );
 
-  await saveState({ ...state, imageTag });
   await applyResources(imageTag);
   await waitForDeployment();
   await waitForHttpContract(imageTag, state.hostPort);
+  await saveState({ ...state, imageTag });
 
   console.log(`Lab is ready at ${nodePortUrl(state.hostPort)}`);
   console.log(`Cluster context: ${contextName}; namespace: ${namespace}`);
