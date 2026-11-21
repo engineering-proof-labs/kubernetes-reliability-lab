@@ -14,6 +14,7 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "build": "tsc -p tsconfig.json",
+    "image:build": "docker build --tag kubernetes-reliability-lab:local .",
     "verify": "npm run typecheck && npm run lint && npm run format:check && npm test && npm run build"
   },
   "devDependencies": {
