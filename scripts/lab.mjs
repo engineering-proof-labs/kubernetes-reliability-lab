@@ -18,6 +18,8 @@ const clusterName = "reliability-lab";
 const contextName = `kind-${clusterName}`;
 const namespace = "reliability-lab";
 const appName = "reliability-api";
+const replicaCount = 3;
+const appSelector = `app.kubernetes.io/name=${appName}`;
 const defaultHostPort = 8080;
 const cacheDirectory = join(projectRoot, ".cache");
 const kubeconfigPath = join(cacheDirectory, "kubeconfig");
@@ -307,7 +309,7 @@ async function runClusterAcceptance() {
 
   const [deployment, pods, service, endpointSlices] = await Promise.all([
     getResource("deployment", appName),
-    getResource("pods", `-l=app.kubernetes.io/name=${appName}`),
+    getResource("pods", `-l=${appSelector}`),
     getResource("service", appName),
     getResource(
       "endpointslices.discovery.k8s.io",
@@ -316,17 +318,17 @@ async function runClusterAcceptance() {
   ]);
 
   assertDeployment(deployment, state.imageTag);
-  const pod = assertSingleReadyPod(pods);
+  const readyPods = assertReadyPods(pods);
   assertService(service);
-  assertSingleReadyEndpoint(endpointSlices);
+  assertReadyEndpoints(endpointSlices, replicaCount);
 
   const root = await requestJson("/", state.hostPort);
-  if (root.body.instanceId !== pod.metadata.name) {
-    throw new Error("The API instanceId does not match the ready Pod name");
+  if (!readyPods.some((pod) => root.body.instanceId === pod.metadata.name)) {
+    throw new Error("The API instanceId does not match a ready Pod name");
   }
 
   console.log(
-    "Cluster acceptance passed: one ready Pod, one Service endpoint, HTTP routes, and configured resources.",
+    `Cluster acceptance passed: ${replicaCount} ready Pods, ${replicaCount} Service endpoints, HTTP routes, and configured resources.`,
   );
 }
 
@@ -343,8 +345,8 @@ function assertDeployment(deployment, expectedVersion) {
     (item) => item.name === "api",
   );
   if (
-    deployment.spec.replicas !== 1 ||
-    deployment.status.availableReplicas !== 1 ||
+    deployment.spec.replicas !== replicaCount ||
+    deployment.status.availableReplicas !== replicaCount ||
     container?.env?.find((item) => item.name === "APP_VERSION")?.value !==
       expectedVersion ||
     container?.resources?.requests?.cpu !== "100m" ||
@@ -353,25 +355,31 @@ function assertDeployment(deployment, expectedVersion) {
     container?.resources?.limits?.memory !== "128Mi"
   ) {
     throw new Error(
-      "Deployment does not match the stage 1 replica, version, or resource contract",
+      "Deployment does not match the replica, version, or resource contract",
     );
   }
 }
 
-function assertSingleReadyPod(pods) {
-  if (pods.items.length !== 1) {
-    throw new Error(`Expected one API Pod, found ${pods.items.length}`);
+function assertReadyPods(pods) {
+  if (pods.items.length !== replicaCount) {
+    throw new Error(
+      `Expected ${replicaCount} API Pods, found ${pods.items.length}`,
+    );
   }
 
-  const pod = pods.items[0];
-  const isReady = pod.status.conditions?.some(
-    (condition) => condition.type === "Ready" && condition.status === "True",
-  );
-  if (pod.status.phase !== "Running" || !isReady) {
-    throw new Error(`Pod ${pod.metadata.name} is not Running and Ready`);
+  const notReady = pods.items.filter((pod) => {
+    const isReady = pod.status.conditions?.some(
+      (condition) => condition.type === "Ready" && condition.status === "True",
+    );
+    return pod.status.phase !== "Running" || !isReady;
+  });
+  if (notReady.length > 0) {
+    throw new Error(
+      `Not all API Pods are Running and Ready: ${notReady.map((pod) => pod.metadata.name).join(", ")}`,
+    );
   }
 
-  return pod;
+  return pods.items;
 }
 
 function assertService(service) {
@@ -382,20 +390,20 @@ function assertService(service) {
     port?.targetPort !== 8080 ||
     port?.nodePort !== 30080
   ) {
-    throw new Error("Service does not match the stage 1 NodePort contract");
+    throw new Error("Service does not match the NodePort contract");
   }
 }
 
-function assertSingleReadyEndpoint(endpointSlices) {
+function assertReadyEndpoints(endpointSlices, expectedCount) {
   const endpoints = endpointSlices.items.flatMap(
     (slice) => slice.endpoints ?? [],
   );
   const ready = endpoints.filter(
     (endpoint) => endpoint.conditions?.ready === true,
   );
-  if (ready.length !== 1) {
+  if (ready.length !== expectedCount) {
     throw new Error(
-      `Expected one ready Service endpoint, found ${ready.length}`,
+      `Expected ${expectedCount} ready Service endpoints, found ${ready.length}`,
     );
   }
 }
@@ -563,4 +571,4 @@ if (
   });
 }
 
-export { runClusterAcceptance };
+export { requireOwnedCluster, runClusterAcceptance, runKubectl };

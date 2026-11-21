@@ -7,7 +7,7 @@ metadata:
     app.kubernetes.io/name: reliability-api
     app.kubernetes.io/part-of: kubernetes-reliability-lab
 spec:
-  replicas: 1
+  replicas: 3
   selector:
     matchLabels:
       app.kubernetes.io/name: reliability-api
