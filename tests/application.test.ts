@@ -33,6 +33,7 @@ describe("HTTP application", () => {
         version: "1.2.3",
         instanceId: "pod-a",
         startupDelayMs: 0,
+        readinessMode: "normal",
       },
       (line) => logs.push(line),
     );
@@ -102,6 +103,36 @@ describe("HTTP application", () => {
     await expect(liveness.json()).resolves.toEqual({ status: "ok" });
   });
 
+  it("blocks readiness by configuration while keeping liveness healthy", async () => {
+    const blockedServer = createApplication({
+      port: 0,
+      version: "1.2.3",
+      instanceId: "blocked-pod",
+      startupDelayMs: 0,
+      readinessMode: "blocked",
+    });
+    blockedServer.listen(0, "127.0.0.1");
+    await once(blockedServer, "listening");
+
+    const address = blockedServer.address();
+    assert(address && typeof address !== "string");
+    const blockedUrl = `http://127.0.0.1:${(address as AddressInfo).port}`;
+
+    try {
+      const readiness = await fetch(`${blockedUrl}/health/ready`);
+      const liveness = await fetch(`${blockedUrl}/health/live`);
+
+      expect(readiness.status).toBe(503);
+      await expect(readiness.json()).resolves.toEqual({ status: "not_ready" });
+      expect(liveness.status).toBe(200);
+      await expect(liveness.json()).resolves.toEqual({ status: "ok" });
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        blockedServer.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  });
+
   it("marks readiness failed without failing liveness", async () => {
     await writeFile(readinessFailureFile, "active");
 
@@ -140,6 +171,7 @@ describe("HTTP application", () => {
       version: "1.2.3",
       instanceId: "slow-pod",
       startupDelayMs: 1_000,
+      readinessMode: "normal",
     });
     delayedServer.listen(0, "127.0.0.1");
     await once(delayedServer, "listening");

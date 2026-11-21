@@ -5,6 +5,7 @@ export interface AppConfig {
   version: string;
   instanceId: string;
   startupDelayMs: number;
+  readinessMode: "normal" | "blocked";
 }
 
 export function readAppConfig(
@@ -33,5 +34,10 @@ export function readAppConfig(
     throw new Error("STARTUP_DELAY_MS must be an integer between 0 and 60000");
   }
 
-  return { port, version, instanceId, startupDelayMs };
+  const readinessMode = env.READINESS_MODE?.trim() || "normal";
+  if (readinessMode !== "normal" && readinessMode !== "blocked") {
+    throw new Error("READINESS_MODE must be either normal or blocked");
+  }
+
+  return { port, version, instanceId, startupDelayMs, readinessMode };
 }

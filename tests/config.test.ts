@@ -13,6 +13,7 @@ describe("application configuration", () => {
       version: "1.2.3",
       instanceId: "api-abc",
       startupDelayMs: 0,
+      readinessMode: "normal",
     });
   });
 
@@ -22,12 +23,25 @@ describe("application configuration", () => {
       version: "dev",
       instanceId: "local-host",
       startupDelayMs: 0,
+      readinessMode: "normal",
     });
   });
 
   it("accepts a bounded startup delay for the probe exercise", () => {
     expect(readAppConfig({ STARTUP_DELAY_MS: "8000" }).startupDelayMs).toBe(
       8_000,
+    );
+  });
+
+  it("accepts the blocked readiness mode for the rollout exercise", () => {
+    expect(readAppConfig({ READINESS_MODE: "blocked" }).readinessMode).toBe(
+      "blocked",
+    );
+  });
+
+  it("rejects unknown readiness modes", () => {
+    expect(() => readAppConfig({ READINESS_MODE: "sometimes" })).toThrow(
+      "READINESS_MODE must be either normal or blocked",
     );
   });
 

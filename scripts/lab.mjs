@@ -349,10 +349,17 @@ function assertDeployment(deployment, expectedVersion) {
   if (
     deployment.spec.replicas !== replicaCount ||
     deployment.status.availableReplicas !== replicaCount ||
+    deployment.spec.progressDeadlineSeconds !== 60 ||
+    deployment.spec.strategy?.type !== "RollingUpdate" ||
+    deployment.spec.strategy?.rollingUpdate?.maxUnavailable !== 0 ||
+    deployment.spec.strategy?.rollingUpdate?.maxSurge !== 1 ||
+    container?.image !== imageName(expectedVersion) ||
     container?.env?.find((item) => item.name === "APP_VERSION")?.value !==
       expectedVersion ||
     container?.env?.find((item) => item.name === "STARTUP_DELAY_MS")?.value !==
       "8000" ||
+    container?.env?.find((item) => item.name === "READINESS_MODE")?.value !==
+      "normal" ||
     !matchesHttpProbe(container?.startupProbe, "/health/startup", 10) ||
     !matchesHttpProbe(container?.livenessProbe, "/health/live", 3) ||
     !matchesHttpProbe(container?.readinessProbe, "/health/ready", 1) ||
@@ -363,7 +370,7 @@ function assertDeployment(deployment, expectedVersion) {
     container?.resources?.limits?.memory !== "128Mi"
   ) {
     throw new Error(
-      "Deployment does not match the replica, version, probe, or resource contract",
+      "Deployment does not match the replica, rollout, version, probe, or resource contract",
     );
   }
 }

@@ -71,7 +71,8 @@ export function createApplication(
     }
 
     if (request.method === "GET" && path === "/health/ready") {
-      const ready = !existsSync(readinessFailureFile);
+      const ready =
+        config.readinessMode === "normal" && !existsSync(readinessFailureFile);
       sendJson(response, ready ? 200 : 503, {
         status: ready ? "ok" : "not_ready",
       });

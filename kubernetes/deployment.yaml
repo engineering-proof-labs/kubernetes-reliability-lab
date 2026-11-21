@@ -8,6 +8,12 @@ metadata:
     app.kubernetes.io/part-of: kubernetes-reliability-lab
 spec:
   replicas: 3
+  progressDeadlineSeconds: 60
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: reliability-api
@@ -32,6 +38,8 @@ spec:
               value: __VERSION__
             - name: STARTUP_DELAY_MS
               value: "8000"
+            - name: READINESS_MODE
+              value: normal
             - name: POD_NAME
               valueFrom:
                 fieldRef:
