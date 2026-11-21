@@ -353,6 +353,7 @@ function assertDeployment(deployment, expectedVersion) {
     deployment.spec.strategy?.type !== "RollingUpdate" ||
     deployment.spec.strategy?.rollingUpdate?.maxUnavailable !== 0 ||
     deployment.spec.strategy?.rollingUpdate?.maxSurge !== 1 ||
+    deployment.spec.template.spec.terminationGracePeriodSeconds !== 30 ||
     container?.image !== imageName(expectedVersion) ||
     container?.env?.find((item) => item.name === "APP_VERSION")?.value !==
       expectedVersion ||
@@ -370,7 +371,7 @@ function assertDeployment(deployment, expectedVersion) {
     container?.resources?.limits?.memory !== "128Mi"
   ) {
     throw new Error(
-      "Deployment does not match the replica, rollout, version, probe, or resource contract",
+      "Deployment does not match the replica, rollout, termination, version, probe, or resource contract",
     );
   }
 }

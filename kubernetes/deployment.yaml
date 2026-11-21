@@ -23,6 +23,7 @@ spec:
         app.kubernetes.io/name: reliability-api
         app.kubernetes.io/part-of: kubernetes-reliability-lab
     spec:
+      terminationGracePeriodSeconds: 30
       containers:
         - name: api
           image: __IMAGE__

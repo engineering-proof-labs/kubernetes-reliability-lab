@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { rm, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
@@ -79,6 +80,56 @@ describe("HTTP application", () => {
     expect(accessLog.durationMs).toEqual(expect.any(Number));
     expect(Number.isNaN(Date.parse(String(accessLog.timestamp)))).toBe(false);
     expect(JSON.stringify(accessLog)).not.toContain("ignored=value");
+  });
+
+  it("completes bounded work and logs its operation ID", async () => {
+    const operationId = randomUUID();
+    const response = await fetch(`${baseUrl}/work?durationMs=5`, {
+      headers: { "x-operation-id": operationId },
+    });
+    const body = await response.json();
+    const workStarted = logs
+      .map((line) => JSON.parse(line))
+      .find((entry) => entry.event === "work.started");
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({
+      status: "completed",
+      operationId,
+      instanceId: "pod-a",
+      durationMs: 5,
+    });
+    expect(response.headers.get("x-request-id")).toBe(body.requestId);
+    expect(workStarted).toMatchObject({
+      event: "work.started",
+      operationId,
+      durationMs: 5,
+      instanceId: "pod-a",
+    });
+  });
+
+  it.each([undefined, "0", "10001", "1.5", "9007199254740992"])(
+    "rejects work duration %j outside the supported range",
+    async (durationMs) => {
+      const query = durationMs === undefined ? "" : `?durationMs=${durationMs}`;
+      const response = await fetch(`${baseUrl}/work${query}`);
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({
+        error: "durationMs must be an integer between 1 and 10000",
+      });
+    },
+  );
+
+  it("rejects a malformed operation ID", async () => {
+    const response = await fetch(`${baseUrl}/work?durationMs=1`, {
+      headers: { "x-operation-id": "not-a-uuid" },
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "x-operation-id must be a UUID",
+    });
   });
 
   it("reports that the process is live", async () => {

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 import type { AppConfig } from "./config.js";
 
+const maximumWorkDurationMs = 10_000;
 const readinessFailureFile = join(
   tmpdir(),
   "kubernetes-reliability-lab-readiness-failure",
@@ -61,6 +62,50 @@ export function createApplication(
       return;
     }
 
+    if (request.method === "GET" && path === "/work") {
+      const durationMs = readWorkDuration(request.url ?? "");
+      if (durationMs === null) {
+        sendJson(response, 400, {
+          error: `durationMs must be an integer between 1 and ${maximumWorkDurationMs}`,
+        });
+        return;
+      }
+
+      const operationId = request.headers["x-operation-id"];
+      if (
+        operationId !== undefined &&
+        (typeof operationId !== "string" ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+            operationId,
+          ))
+      ) {
+        sendJson(response, 400, { error: "x-operation-id must be a UUID" });
+        return;
+      }
+
+      writeLog(
+        JSON.stringify({
+          timestamp: new Date().toISOString(),
+          event: "work.started",
+          requestId,
+          ...(operationId === undefined ? {} : { operationId }),
+          durationMs,
+          instanceId: config.instanceId,
+        }),
+      );
+
+      setTimeout(() => {
+        sendJson(response, 200, {
+          status: "completed",
+          requestId,
+          ...(operationId === undefined ? {} : { operationId }),
+          instanceId: config.instanceId,
+          durationMs,
+        });
+      }, durationMs);
+      return;
+    }
+
     if (request.method === "GET" && path === "/health/startup") {
       const startupComplete =
         performance.now() - applicationStartedAt >= config.startupDelayMs;
@@ -94,10 +139,33 @@ export function createApplication(
 function sendJson(
   response: import("node:http").ServerResponse,
   status: number,
-  body: Record<string, string>,
+  body: Record<string, string | number>,
 ): void {
   response.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
   });
   response.end(JSON.stringify(body));
+}
+
+function readWorkDuration(requestUrl: string): number | null {
+  const query = requestUrl.split("?", 2)[1];
+  if (query === undefined) {
+    return null;
+  }
+
+  const rawDuration = new URLSearchParams(query).get("durationMs");
+  if (rawDuration === null || !/^\d+$/.test(rawDuration)) {
+    return null;
+  }
+
+  const durationMs = Number(rawDuration);
+  if (
+    !Number.isSafeInteger(durationMs) ||
+    durationMs < 1 ||
+    durationMs > maximumWorkDurationMs
+  ) {
+    return null;
+  }
+
+  return durationMs;
 }
