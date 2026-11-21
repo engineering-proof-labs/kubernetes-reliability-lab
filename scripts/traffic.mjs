@@ -2,6 +2,7 @@ import { request as httpRequest } from "node:http";
 import { performance } from "node:perf_hooks";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
 import { requireOwnedCluster } from "./lab.mjs";
 
 const defaultRequestCount = 60;
@@ -85,6 +86,26 @@ export async function runTrafficExperiment(
   return summary;
 }
 
+export async function sampleServiceTraffic(endpoint, startedAt, signal) {
+  const intervalMs = 250;
+  const attempts = [];
+
+  while (!signal.aborted) {
+    const sentAtMs = elapsedMilliseconds(startedAt);
+    const response = await sendRequest(endpoint);
+    attempts.push({ sentAtMs, ...response });
+    if (!signal.aborted) {
+      await delay(intervalMs);
+    }
+  }
+
+  return {
+    ...summarizeResults(endpoint, attempts.length, 1, attempts),
+    intervalMs,
+    attempts,
+  };
+}
+
 function sendRequest(endpoint) {
   const startedAt = performance.now();
 
@@ -132,11 +153,12 @@ function sendRequest(endpoint) {
       },
     );
 
-    request.setTimeout(requestTimeoutMs, () => {
+    const timer = setTimeout(() => {
       const error = new Error("Request timed out");
       error.code = "ETIMEDOUT";
       request.destroy(error);
-    });
+    }, requestTimeoutMs);
+    request.once("close", () => clearTimeout(timer));
     request.once("error", (error) =>
       resolveRequest(transportFailure(startedAt, error)),
     );

@@ -3,7 +3,7 @@ import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runTrafficExperiment } from "./traffic.mjs";
+import { sampleServiceTraffic } from "./traffic.mjs";
 import {
   requireOwnedCluster,
   runClusterAcceptance,
@@ -24,6 +24,7 @@ async function main() {
   const operationId = randomUUID();
   const logStream = startLogStream();
   const workRequests = [];
+  const trafficController = new AbortController();
   let targetPod;
   let deletionRequested = false;
   let deploymentRecovered = false;
@@ -55,6 +56,13 @@ async function main() {
     }
 
     activeStage = "deleting the Pod with a 30-second grace period";
+    const deletionStartedAt = performance.now();
+    const serviceTraffic = sampleServiceTraffic(
+      endpoint,
+      deletionStartedAt,
+      trafficController.signal,
+    );
+    workRequests.push(serviceTraffic);
     deletionRequested = true;
     await runKubectl([
       "delete",
@@ -63,9 +71,8 @@ async function main() {
       "--wait=false",
     ]);
 
+    const deleteAcknowledgedAtMs = round(performance.now() - deletionStartedAt);
     activeStage = "observing the terminating Pod and Service";
-    const serviceTraffic = runTrafficExperiment(endpoint, 60, 4);
-    workRequests.push(serviceTraffic);
     const observations = await Promise.allSettled([
       waitForTerminatingEndpoint(targetPod.metadata.name),
       waitForLogEvent(
@@ -76,7 +83,6 @@ async function main() {
         "the SIGTERM shutdown-started log entry",
       ),
       workRequest,
-      serviceTraffic,
       waitForLogEvent(
         logStream,
         (entry) =>
@@ -92,13 +98,8 @@ async function main() {
       throw failedObservation.reason;
     }
 
-    const [
-      terminatingState,
-      shutdownStarted,
-      work,
-      traffic,
-      shutdownCompleted,
-    ] = observations.map((observation) => observation.value);
+    const [terminatingState, shutdownStarted, work, shutdownCompleted] =
+      observations.map((observation) => observation.value);
     const timeFromWorkStartToSignalMs =
       Date.parse(shutdownStarted.timestamp) - Date.parse(workStarted.timestamp);
 
@@ -116,6 +117,9 @@ async function main() {
 
     activeStage = "waiting for the replacement Pod";
     const replacementPods = await waitForReplacement(targetPod.metadata.uid);
+    const replacementReadyAtMs = round(performance.now() - deletionStartedAt);
+    trafficController.abort();
+    const traffic = await serviceTraffic;
     const originalPodUids = new Set(
       initialPods.items.map((pod) => pod.metadata.uid),
     );
@@ -151,16 +155,14 @@ async function main() {
         endpointTerminating:
           terminatingState.endpoint.conditions?.terminating ?? null,
       },
-      serviceTraffic: {
-        attempted: traffic.attempted,
-        successfulResponses: traffic.successfulResponses,
-        httpErrors: traffic.httpErrors,
-        transportErrors: traffic.transportErrors,
-        uniqueResponseRequestIds: traffic.uniqueResponseRequestIds,
-        statusCodes: traffic.statusCodes,
-        transportErrorCodes: traffic.transportErrorCodes,
-        latencyMs: traffic.latencyMs,
+      timeline: {
+        deleteAcknowledgedAtMs,
+        endpointTerminatingObservedAtMs: round(
+          terminatingState.observedAt - deletionStartedAt,
+        ),
+        replacementReadyAtMs,
       },
+      serviceTraffic: traffic,
       replacement: {
         originalPodUid: targetPod.metadata.uid,
         newPods: createdPods.map((pod) => ({
@@ -172,6 +174,7 @@ async function main() {
       },
     };
   } catch (error) {
+    trafficController.abort();
     const message = error instanceof Error ? error.message : String(error);
     failure = new Error(`${activeStage}: ${message}`, { cause: error });
     await reportFailureDiagnostics(logStream, targetPod?.metadata.name);
@@ -385,7 +388,11 @@ async function waitForTerminatingEndpoint(podName) {
       latestEndpoint?.conditions?.terminating === true &&
       latestEndpoint.conditions.ready === false
     ) {
-      return { pod: latestPod, endpoint: latestEndpoint };
+      return {
+        pod: latestPod,
+        endpoint: latestEndpoint,
+        observedAt: performance.now(),
+      };
     }
 
     await delay(200);
