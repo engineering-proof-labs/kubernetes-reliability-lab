@@ -26,5 +26,6 @@ jobs:
       - run: npm run test:cluster
       - run: npm run experiment:probes
       - run: npm run experiment:replace-pod
+      - run: npm run experiment:rollout
       - if: always()
         run: npm run lab:down
