@@ -4,7 +4,7 @@ import { basename } from "node:path";
 export function runCommand(
   command,
   args,
-  { cwd, capture = false, input, onStdout, signal } = {},
+  { cwd, capture = false, input, onStdout, signal, timeoutMs } = {},
 ) {
   return new Promise((resolve, reject) => {
     const pipeStdout = capture || typeof onStdout === "function";
@@ -21,6 +21,14 @@ export function runCommand(
     let stdout = "";
     let stderr = "";
     let intentionallyStopped = false;
+    let timedOut = false;
+    const timer =
+      timeoutMs === undefined
+        ? undefined
+        : setTimeout(() => {
+            timedOut = true;
+            child.kill("SIGKILL");
+          }, timeoutMs);
 
     if (pipeStdout) {
       child.stdout.setEncoding("utf8");
@@ -39,7 +47,7 @@ export function runCommand(
 
     const stopChild = () => {
       intentionallyStopped = true;
-      child.kill();
+      child.kill("SIGKILL");
     };
     if (signal?.aborted) {
       stopChild();
@@ -59,7 +67,16 @@ export function runCommand(
     });
 
     child.once("close", (code, closeSignal) => {
+      clearTimeout(timer);
       signal?.removeEventListener("abort", stopChild);
+      if (timedOut) {
+        reject(
+          new Error(
+            `${basename(command)} ${args.join(" ")} timed out after ${timeoutMs} ms`,
+          ),
+        );
+        return;
+      }
       if (intentionallyStopped) {
         resolve(stdout.trim());
         return;
@@ -82,6 +99,11 @@ export function runCommand(
     });
 
     if (input !== undefined) {
+      child.stdin.on("error", (error) => {
+        if (error.code !== "EPIPE" && error.code !== "ERR_STREAM_DESTROYED") {
+          reject(error);
+        }
+      });
       child.stdin.end(input);
     }
   });

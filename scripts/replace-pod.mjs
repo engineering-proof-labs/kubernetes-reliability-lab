@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
 import { requireOwnedCluster, runKubectl } from "./lab.mjs";
 
 const appName = "reliability-api";
@@ -12,19 +13,20 @@ async function main() {
   assertReadyPods(before);
 
   const deletedPod = before.items[0];
-  await runKubectl([
-    "delete",
-    "pod",
-    deletedPod.metadata.name,
-    "--wait=true",
-    "--timeout=120s",
-  ]);
-  await runKubectl([
-    "rollout",
-    "status",
-    `deployment/${appName}`,
-    "--timeout=120s",
-  ]);
+  await runKubectl(
+    [
+      "delete",
+      "pod",
+      deletedPod.metadata.name,
+      "--wait=true",
+      "--timeout=120s",
+    ],
+    { timeoutMs: 125_000 },
+  );
+  await runKubectl(
+    ["rollout", "status", `deployment/${appName}`, "--timeout=120s"],
+    { timeoutMs: 125_000 },
+  );
 
   const after = await getPods();
   assertReadyPods(after);
@@ -42,18 +44,7 @@ async function main() {
     );
   }
 
-  const endpointSlices = await getResource(
-    "endpointslices.discovery.k8s.io",
-    `-l=kubernetes.io/service-name=${appName}`,
-  );
-  const readyEndpoints = endpointSlices.items
-    .flatMap((slice) => slice.endpoints ?? [])
-    .filter((endpoint) => endpoint.conditions?.ready === true);
-  if (readyEndpoints.length !== replicaCount) {
-    throw new Error(
-      `Expected ${replicaCount} ready Service endpoints after replacement, found ${readyEndpoints.length}`,
-    );
-  }
+  const readyEndpoints = await waitForReadyEndpoints(after.items);
 
   const response = await fetch(`http://127.0.0.1:${state.hostPort}/`, {
     signal: AbortSignal.timeout(3_000),
@@ -78,7 +69,7 @@ async function main() {
           uid: pod.metadata.uid,
         })),
         readyPods: after.items.length,
-        readyServiceEndpoints: readyEndpoints.length,
+        readyServiceEndpoints: readyEndpoints.size,
         responseInstanceId: body.instanceId,
       },
       null,
@@ -87,14 +78,45 @@ async function main() {
   );
 }
 
+async function waitForReadyEndpoints(pods) {
+  const deadline = Date.now() + 30_000;
+  const expected = new Set(pods.map((pod) => pod.metadata.uid));
+  let ready = [];
+
+  while (Date.now() < deadline) {
+    const slices = await getResource(
+      "endpointslices.discovery.k8s.io",
+      `-l=kubernetes.io/service-name=${appName}`,
+      deadline,
+    );
+    ready = slices.items
+      .flatMap((slice) => slice.endpoints ?? [])
+      .filter((endpoint) => endpoint.conditions?.ready === true);
+
+    const actual = new Set(ready.map((endpoint) => endpoint.targetRef?.uid));
+    if (
+      actual.size === expected.size &&
+      [...expected].every((uid) => actual.has(uid))
+    ) {
+      return actual;
+    }
+    await delay(Math.max(0, Math.min(250, deadline - Date.now())));
+  }
+
+  const actual = ready.map((endpoint) => endpoint.targetRef?.name);
+  throw new Error(
+    `Service endpoints did not converge to the expected Pods: ${JSON.stringify(actual)}`,
+  );
+}
+
 async function getPods() {
   return getResource("pods", selector);
 }
 
-async function getResource(resource, nameOrSelector) {
+async function getResource(resource, nameOrSelector, deadline) {
   const output = await runKubectl(
     ["get", resource, nameOrSelector, "-o", "json"],
-    { capture: true },
+    { capture: true, deadline },
   );
   return JSON.parse(output);
 }

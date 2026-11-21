@@ -88,7 +88,9 @@ async function labCheck() {
 
 async function labLogs() {
   await requireOwnedCluster();
-  await runKubectl(["logs", `deployment/${appName}`, "--follow"]);
+  await runKubectl(["logs", `deployment/${appName}`, "--follow"], {
+    follow: true,
+  });
 }
 
 async function labDown() {
@@ -233,16 +235,14 @@ async function applyResources(imageTag) {
 }
 
 async function waitForDeployment() {
-  await runKubectl([
-    "rollout",
-    "status",
-    `deployment/${appName}`,
-    "--timeout=120s",
-  ]);
+  await runKubectl(
+    ["rollout", "status", `deployment/${appName}`, "--timeout=120s"],
+    { timeoutMs: 125_000 },
+  );
 }
 
-async function verifyHttpContract(expectedVersion, hostPort) {
-  const root = await requestJson("/", hostPort);
+async function verifyHttpContract(expectedVersion, hostPort, deadline) {
+  const root = await requestJson("/", hostPort, deadline);
   if (
     root.status !== 200 ||
     root.body.version !== expectedVersion ||
@@ -253,7 +253,7 @@ async function verifyHttpContract(expectedVersion, hostPort) {
   }
 
   for (const path of ["/health/startup", "/health/ready", "/health/live"]) {
-    const health = await requestJson(path, hostPort);
+    const health = await requestJson(path, hostPort, deadline);
     if (health.status !== 200 || health.body.status !== "ok") {
       throw new Error(`Unexpected ${path} response: ${JSON.stringify(health)}`);
     }
@@ -274,7 +274,7 @@ async function waitForHttpContract(expectedVersion, hostPort) {
 
   while (Date.now() < deadline) {
     try {
-      await verifyHttpContract(expectedVersion, hostPort);
+      await verifyHttpContract(expectedVersion, hostPort, deadline);
       return;
     } catch (error) {
       lastError = error;
@@ -287,9 +287,10 @@ async function waitForHttpContract(expectedVersion, hostPort) {
   );
 }
 
-async function requestJson(path, hostPort) {
+async function requestJson(path, hostPort, deadline) {
+  const budget = remainingTime(3_000, deadline);
   const response = await fetch(`${nodePortUrl(hostPort)}${path}`, {
-    signal: AbortSignal.timeout(3_000),
+    signal: AbortSignal.timeout(budget),
   });
   const text = await response.text();
   let body;
@@ -305,17 +306,18 @@ async function requestJson(path, hostPort) {
   return { status: response.status, body };
 }
 
-async function runClusterAcceptance() {
-  const state = await requireOwnedCluster();
-  await verifyHttpContract(state.imageTag, state.hostPort);
+async function runClusterAcceptance(deadline) {
+  const state = await requireOwnedCluster(deadline);
+  await verifyHttpContract(state.imageTag, state.hostPort, deadline);
 
   const [deployment, pods, service, endpointSlices] = await Promise.all([
-    getResource("deployment", appName),
-    getResource("pods", `-l=${appSelector}`),
-    getResource("service", appName),
+    getResource("deployment", appName, deadline),
+    getResource("pods", `-l=${appSelector}`, deadline),
+    getResource("service", appName, deadline),
     getResource(
       "endpointslices.discovery.k8s.io",
       `-l=kubernetes.io/service-name=${appName}`,
+      deadline,
     ),
   ]);
 
@@ -324,7 +326,7 @@ async function runClusterAcceptance() {
   assertService(service);
   assertReadyEndpoints(endpointSlices, replicaCount);
 
-  const root = await requestJson("/", state.hostPort);
+  const root = await requestJson("/", state.hostPort, deadline);
   if (!readyPods.some((pod) => root.body.instanceId === pod.metadata.name)) {
     throw new Error("The API instanceId does not match a ready Pod name");
   }
@@ -334,10 +336,10 @@ async function runClusterAcceptance() {
   );
 }
 
-async function getResource(resource, nameOrSelector) {
+async function getResource(resource, nameOrSelector, deadline) {
   const output = await runKubectl(
     ["get", resource, nameOrSelector, "-o", "json"],
-    { capture: true },
+    { capture: true, deadline },
   );
   return JSON.parse(output);
 }
@@ -434,22 +436,35 @@ function assertReadyEndpoints(endpointSlices, expectedCount) {
   }
 }
 
-async function runKubectl(args, options = {}) {
+function remainingTime(timeoutMs, deadline) {
+  const budget = Math.min(timeoutMs, (deadline ?? Infinity) - Date.now());
+  if (budget <= 0) {
+    throw new Error("Deadline exceeded");
+  }
+  return budget;
+}
+
+async function runKubectl(
+  args,
+  { timeoutMs = 10_000, deadline, follow = false, ...options } = {},
+) {
   await ensureLocalTools();
+  const budgetMs = remainingTime(timeoutMs, deadline);
   return runCommand(
     localTools.kubectl,
     [
       `--kubeconfig=${kubeconfigPath}`,
       `--context=${contextName}`,
       `--namespace=${namespace}`,
+      `--request-timeout=${follow ? "0" : `${budgetMs}ms`}`,
       ...args,
     ],
-    { cwd: projectRoot, ...options },
+    { cwd: projectRoot, timeoutMs: follow ? undefined : budgetMs, ...options },
   );
 }
 
-async function requireOwnedCluster() {
-  if (!(await clusterExists())) {
+async function requireOwnedCluster(deadline) {
+  if (!(await clusterExists(deadline))) {
     throw new Error(
       `kind cluster ${clusterName} is not running; use npm run lab:up`,
     );
@@ -462,7 +477,7 @@ async function requireOwnedCluster() {
     );
   }
 
-  const controlPlaneContainerId = await getControlPlaneContainerId();
+  const controlPlaneContainerId = await getControlPlaneContainerId(deadline);
   if (state.controlPlaneContainerId !== controlPlaneContainerId) {
     throw new Error(
       `Cluster ${clusterName} no longer matches this lab's ownership record; refusing to continue`,
@@ -480,11 +495,12 @@ async function requireOwnedCluster() {
   return state;
 }
 
-async function clusterExists() {
+async function clusterExists(deadline) {
   await ensureLocalTools();
   const output = await runCommand(localTools.kind, ["get", "clusters"], {
     cwd: projectRoot,
     capture: true,
+    timeoutMs: remainingTime(10_000, deadline),
   });
   const clusters = output
     .split(/\r?\n/)
@@ -492,11 +508,15 @@ async function clusterExists() {
   return clusters.includes(clusterName);
 }
 
-async function getControlPlaneContainerId() {
+async function getControlPlaneContainerId(deadline) {
   return runCommand(
     "docker",
     ["inspect", "--format={{.Id}}", `${clusterName}-control-plane`],
-    { cwd: projectRoot, capture: true },
+    {
+      cwd: projectRoot,
+      capture: true,
+      timeoutMs: remainingTime(10_000, deadline),
+    },
   );
 }
 

@@ -170,7 +170,7 @@ async function assertHealthyRelease(expectedVersion) {
 
   while (Date.now() < deadline) {
     try {
-      const state = await getClusterState();
+      const state = await getClusterState(deadline);
       const readyPods = state.pods.items.filter(isPodReady);
       if (
         getContainerEnv(state.deployment, "APP_VERSION") !== expectedVersion ||
@@ -186,7 +186,9 @@ async function assertHealthyRelease(expectedVersion) {
         );
       }
 
-      const responses = await Promise.all(readyPods.map(readPodResponse));
+      const responses = await Promise.all(
+        readyPods.map((pod) => readPodResponse(pod, deadline)),
+      );
       if (
         responses.some(
           (response) =>
@@ -284,7 +286,9 @@ async function assertBlockedRollout(expectedVersion) {
     );
   }
 
-  const responses = await Promise.all(readyPods.map(readPodResponse));
+  const responses = await Promise.all(
+    readyPods.map((pod) => readPodResponse(pod)),
+  );
   if (
     responses.some(
       (response) =>
@@ -309,32 +313,33 @@ async function assertBlockedRollout(expectedVersion) {
   };
 }
 
-async function getClusterState() {
+async function getClusterState(deadline) {
   const [deployment, pods, replicaSets, endpoints] = await Promise.all([
-    getDeployment(),
-    getPods(),
-    getReplicaSets(),
-    getEndpointState(),
+    getDeployment(deadline),
+    getPods(deadline),
+    getReplicaSets(deadline),
+    getEndpointState(deadline),
   ]);
   return { deployment, pods, replicaSets, endpoints };
 }
 
-async function getDeployment() {
-  return getResource("deployment", appName);
+async function getDeployment(deadline) {
+  return getResource("deployment", appName, deadline);
 }
 
-async function getPods() {
-  return getResource("pods", selector);
+async function getPods(deadline) {
+  return getResource("pods", selector, deadline);
 }
 
-async function getReplicaSets() {
-  return getResource("replicasets", selector);
+async function getReplicaSets(deadline) {
+  return getResource("replicasets", selector, deadline);
 }
 
-async function getEndpointState() {
+async function getEndpointState(deadline) {
   const slices = await getResource(
     "endpointslices.discovery.k8s.io",
     `-l=kubernetes.io/service-name=${appName}`,
+    deadline,
   );
   const endpoints = slices.items.flatMap((slice) => slice.endpoints ?? []);
   return {
@@ -347,10 +352,10 @@ async function getEndpointState() {
   };
 }
 
-async function getResource(resource, nameOrSelector) {
+async function getResource(resource, nameOrSelector, deadline) {
   const output = await runKubectl(
     ["get", resource, nameOrSelector, "-o", "json"],
-    { capture: true },
+    { capture: true, deadline },
   );
   return JSON.parse(output);
 }
@@ -360,12 +365,15 @@ async function setDeploymentEnv(name, value) {
 }
 
 async function waitForRollout() {
-  await runKubectl([
-    "rollout",
-    "status",
-    `deployment/${appName}`,
-    `--timeout=${rolloutTimeout}`,
-  ]);
+  await runKubectl(
+    [
+      "rollout",
+      "status",
+      `deployment/${appName}`,
+      `--timeout=${rolloutTimeout}`,
+    ],
+    { timeoutMs: 125_000 },
+  );
 }
 
 async function waitForClusterAcceptance() {
@@ -374,7 +382,7 @@ async function waitForClusterAcceptance() {
   let lastError;
   while (Date.now() < deadline) {
     try {
-      await runClusterAcceptance();
+      await runClusterAcceptance(deadline);
       return;
     } catch (error) {
       lastError = error;
@@ -410,7 +418,7 @@ async function restoreBaseline(revision, version) {
   assertBaselineTemplate(restoredDeployment, version);
 }
 
-async function readPodResponse(pod) {
+async function readPodResponse(pod, deadline) {
   const source = `const response = await fetch("http://127.0.0.1:8080/", { signal: AbortSignal.timeout(10000) }); console.log(JSON.stringify({ status: response.status, body: await response.json() }));`;
   const output = await runKubectl(
     [
@@ -422,7 +430,7 @@ async function readPodResponse(pod) {
       "-e",
       source,
     ],
-    { capture: true },
+    { capture: true, deadline },
   );
   return JSON.parse(output);
 }

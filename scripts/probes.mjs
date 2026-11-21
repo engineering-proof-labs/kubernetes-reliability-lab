@@ -84,10 +84,10 @@ async function demonstrateReadiness(podName, initialRestartCount) {
   await writeFailureMarker(podName, readinessMarker);
   const degraded = await waitFor(
     "the Pod to become unready and leave ready Service endpoints",
-    async () => {
+    async (deadline) => {
       const [pod, endpoints] = await Promise.all([
-        getPod(podName),
-        getEndpointState(),
+        getPod(podName, deadline),
+        getEndpointState(deadline),
       ]);
       const ready = isPodReady(pod);
       const restartCount = getRestartCount(pod);
@@ -147,8 +147,8 @@ async function demonstrateLiveness(podName, podUid) {
 
   const startupPending = await waitFor(
     "the container restart and startup probe gate",
-    async () => {
-      const pod = await getPod(podName);
+    async (deadline) => {
+      const pod = await getPod(podName, deadline);
       assertSamePodUid(pod, podUid);
       const container = getApiContainerStatus(pod);
       if (
@@ -186,8 +186,8 @@ async function demonstrateLiveness(podName, podUid) {
   );
   const started = await waitFor(
     "the startup probe to succeed without another restart",
-    async () => {
-      const pod = await getPod(podName);
+    async (deadline) => {
+      const pod = await getPod(podName, deadline);
       assertSamePodUid(pod, podUid);
       const container = getApiContainerStatus(pod);
       if (getRestartCount(pod) !== restartCountBefore + 1) {
@@ -234,10 +234,10 @@ async function demonstrateLiveness(podName, podUid) {
 async function waitForReady(podName, timeoutMs) {
   return waitFor(
     "the Pod and all Service endpoints to become ready",
-    async () => {
+    async (deadline) => {
       const [pod, endpoints] = await Promise.all([
-        getPod(podName),
-        getEndpointState(),
+        getPod(podName, deadline),
+        getEndpointState(deadline),
       ]);
       if (
         isPodReady(pod) &&
@@ -264,7 +264,7 @@ async function waitFor(description, readState, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   let lastState;
   while (Date.now() < deadline) {
-    lastState = await readState();
+    lastState = await readState(deadline);
     if (lastState) {
       return lastState;
     }
@@ -280,14 +280,15 @@ async function getPods() {
   return getResource("pods", selector);
 }
 
-async function getPod(name) {
-  return getResource("pod", name);
+async function getPod(name, deadline) {
+  return getResource("pod", name, deadline);
 }
 
-async function getEndpointState() {
+async function getEndpointState(deadline) {
   const slices = await getResource(
     "endpointslices.discovery.k8s.io",
     `-l=kubernetes.io/service-name=${appName}`,
+    deadline,
   );
   const endpoints = slices.items.flatMap((slice) => slice.endpoints ?? []);
   const readyEndpoints = endpoints.filter(
@@ -302,10 +303,10 @@ async function getEndpointState() {
   };
 }
 
-async function getResource(resource, nameOrSelector) {
+async function getResource(resource, nameOrSelector, deadline) {
   const output = await runKubectl(
     ["get", resource, nameOrSelector, "-o", "json"],
-    { capture: true },
+    { capture: true, deadline },
   );
   return JSON.parse(output);
 }

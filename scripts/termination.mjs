@@ -218,6 +218,7 @@ function startLogStream() {
     {
       capture: true,
       signal: controller.signal,
+      follow: true,
       onStdout: (chunk) => {
         output += chunk;
       },
@@ -369,8 +370,11 @@ async function waitForTerminatingEndpoint(podName) {
   let latestEndpoint;
 
   while (Date.now() < deadline) {
-    latestPod = await getPod(podName);
-    const endpoints = await getEndpointSlices();
+    const [pod, endpoints] = await Promise.all([
+      getPod(podName, deadline),
+      getEndpointSlices(deadline),
+    ]);
+    latestPod = pod;
     latestEndpoint = endpoints.find(
       (endpoint) => endpoint.targetRef?.name === podName,
     );
@@ -406,12 +410,12 @@ async function waitForReplacement(originalUid) {
 
   while (Date.now() < deadline) {
     try {
-      const pods = await getPods();
+      const pods = await getPods(deadline);
       if (
         pods.items.length === 3 &&
         !pods.items.some((pod) => pod.metadata.uid === originalUid)
       ) {
-        await runClusterAcceptance();
+        await runClusterAcceptance(deadline);
         return pods.items;
       }
       lastError = new Error("The deleted Pod UID is still present");
@@ -427,26 +431,27 @@ async function waitForReplacement(originalUid) {
   );
 }
 
-async function getPods() {
-  return getResource("pods", `-l=${appSelector}`);
+async function getPods(deadline) {
+  return getResource("pods", `-l=${appSelector}`, deadline);
 }
 
-async function getPod(podName) {
-  return getResource("pod", podName);
+async function getPod(podName, deadline) {
+  return getResource("pod", podName, deadline);
 }
 
-async function getEndpointSlices() {
+async function getEndpointSlices(deadline) {
   const slices = await getResource(
     "endpointslices.discovery.k8s.io",
     `-l=kubernetes.io/service-name=${appName}`,
+    deadline,
   );
   return slices.items.flatMap((slice) => slice.endpoints ?? []);
 }
 
-async function getResource(resource, nameOrSelector) {
+async function getResource(resource, nameOrSelector, deadline) {
   const output = await runKubectl(
     ["get", resource, nameOrSelector, "-o", "json"],
-    { capture: true },
+    { capture: true, deadline },
   );
   return JSON.parse(output);
 }
