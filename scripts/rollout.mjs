@@ -98,9 +98,7 @@ async function main() {
     console.log(
       `Rolling back explicitly to baseline revision ${baselineRevision}`,
     );
-    await rollbackToRevision(baselineRevision);
-    const restoredDeployment = await getDeployment();
-    assertBaselineTemplate(restoredDeployment, baselineVersion);
+    await restoreBaseline(baselineRevision, baselineVersion);
     activeStage = "verifying the restored Service";
     await waitForClusterAcceptance();
     restoreNeeded = false;
@@ -390,26 +388,38 @@ async function waitForClusterAcceptance() {
   );
 }
 
-async function rollbackToRevision(revision) {
-  await runKubectl([
-    "rollout",
-    "undo",
-    `deployment/${appName}`,
-    `--to-revision=${revision}`,
-  ]);
-  await waitForRollout();
-}
-
 async function restoreBaseline(revision, version) {
-  const deployment = await getDeployment();
-  if (isBaselineTemplate(deployment, version)) {
-    await waitForRollout();
-    return;
+  if (!isBaselineTemplate(await getDeployment(), version)) {
+    await runKubectl([
+      "rollout",
+      "undo",
+      `deployment/${appName}`,
+      `--to-revision=${revision}`,
+    ]);
   }
 
-  await rollbackToRevision(revision);
-  const restoredDeployment = await getDeployment();
-  assertBaselineTemplate(restoredDeployment, version);
+  const deadline = Date.now() + 120_000;
+  let lastStatus;
+  // The blocked revision's Progressing condition can outlive rollout undo.
+  while (Date.now() < deadline) {
+    const deployment = await getDeployment(deadline);
+    const { metadata, status } = deployment;
+    lastStatus = status;
+    if (
+      isBaselineTemplate(deployment, version) &&
+      status.observedGeneration === metadata.generation &&
+      status.updatedReplicas === replicaCount &&
+      status.replicas === replicaCount &&
+      status.availableReplicas === replicaCount
+    ) {
+      return;
+    }
+    await delay(Math.max(0, Math.min(500, deadline - Date.now())));
+  }
+
+  throw new Error(
+    `Rollback did not restore ${version} within 120 seconds: ${JSON.stringify(lastStatus)}`,
+  );
 }
 
 async function readPodResponse(pod, deadline) {
