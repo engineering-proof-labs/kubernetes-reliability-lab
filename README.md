@@ -1,8 +1,8 @@
 # Kubernetes Reliability Lab
 
-A small TypeScript service for experiments with Kubernetes Deployments, Services, and health probes. The current stage runs three API replicas and checks how the Service responds when a Pod is replaced or becomes unready.
+A small TypeScript service for experiments with Kubernetes Deployments, Services, and health probes. The lab runs three API replicas and checks how the Service responds to Pod replacement, readiness failures, and a stalled Deployment update.
 
-The kind cluster has one node, so all three Pods run on the same machine. The lab demonstrates startup, readiness, and liveness probes on that local cluster. It does not yet demonstrate rolling updates or behavior across multiple machines.
+The kind cluster has one node, so all three Pods run on the same machine. The lab demonstrates startup, readiness, and liveness probes, a healthy rolling update, and an explicit rollback after a stalled update. It does not demonstrate behavior across multiple machines.
 
 ## Requirements
 
@@ -41,6 +41,7 @@ npm run test:cluster
 npm run experiment:traffic
 npm run experiment:replace-pod
 npm run experiment:probes
+npm run experiment:rollout
 npm run lab:logs
 ```
 
@@ -65,6 +66,12 @@ Each container simulates an eight-second initialization period. The startup prob
 `experiment:probes` writes a readiness marker into one container's temporary filesystem. It checks that the Pod becomes unready and leaves the set of ready Service endpoints while its container keeps running and its restart count stays unchanged. The liveness route remains healthy during this phase.
 
 The script then writes a separate liveness marker. Kubernetes restarts that container after repeated failed checks. The experiment checks the restart count, Pod UID, startup probe state, and that the marker disappears when the container starts again. Marker files are created with `kubectl exec`; the API has no administrative route for changing health state.
+
+## Rollout experiment
+
+`experiment:rollout` first changes `APP_VERSION` to a new identifiable release label and waits for all three Pods to serve it. It then sets `READINESS_MODE=blocked`, which keeps new Pods unready while the old release continues serving.
+
+The Deployment uses `maxUnavailable: 0`, `maxSurge: 1`, and a 60-second progress deadline. The script waits up to 120 seconds for the `ProgressDeadlineExceeded` condition, records the Deployment and blocked Pod descriptions, ReplicaSet identity, and ready EndpointSlice targets, then sends 30 requests through the Service while the three old endpoints remain ready. It issues `kubectl rollout undo` to the saved baseline revision and verifies the original image and configuration are serving again. Kubernetes reports the stalled rollout; the script performs the rollback explicitly.
 
 To remove the cluster:
 
@@ -98,17 +105,17 @@ The Deployment keeps three replicas. Each Pod receives its own name through the 
 
 The API contract is:
 
-| Request               | Result                                                    |
-| --------------------- | --------------------------------------------------------- |
-| `GET /`               | JSON containing `version` and `instanceId`                |
-| `GET /health/startup` | `503` during simulated initialization, then `200`         |
-| `GET /health/ready`   | `200` when ready; `503` while the readiness marker exists |
-| `GET /health/live`    | `200` while live; `503` while the liveness marker exists  |
-| Any other route       | `404` with `{"error":"not_found"}`                        |
+| Request               | Result                                                                                |
+| --------------------- | ------------------------------------------------------------------------------------- |
+| `GET /`               | JSON containing `version` and `instanceId`                                            |
+| `GET /health/startup` | `503` during simulated initialization, then `200`                                     |
+| `GET /health/ready`   | `200` when ready; `503` while the readiness marker exists or `READINESS_MODE=blocked` |
+| `GET /health/live`    | `200` while live; `503` while the liveness marker exists                              |
+| Any other route       | `404` with `{"error":"not_found"}`                                                    |
 
 Each completed request writes one JSON log line with a timestamp, a server-generated request ID, method, path, status, duration, instance, and version. Query strings are omitted from the logged path.
 
-The Deployment's CPU and memory requests and limits are starting values for this lab, not capacity recommendations. The readiness and liveness markers are independent files in the container's temporary directory. The readiness marker does not restart the container; the liveness marker causes a restart, which removes files from that container's writable layer.
+The Deployment's CPU and memory requests and limits are starting values for this lab, not capacity recommendations. The readiness and liveness markers are independent files in the container's temporary directory. The readiness marker does not restart the container; the liveness marker causes a restart, which removes files from that container's writable layer. During the rollout experiment, readiness can also be held false by configuration without affecting liveness.
 
 ## Verification
 
@@ -124,3 +131,4 @@ The cluster has one node and runs locally in Docker. Results here do not establi
 - [Kubernetes Services](https://kubernetes.io/docs/concepts/services-networking/service/)
 - [Kubernetes startup, liveness, and readiness probes](https://kubernetes.io/docs/concepts/configuration/liveness-readiness-startup-probes/)
 - [Kubernetes EndpointSlices](https://kubernetes.io/docs/concepts/services-networking/endpoint-slices/)
+- [kubectl rollout undo](https://kubernetes.io/docs/reference/kubectl/generated/kubectl_rollout/kubectl_rollout_undo/)
